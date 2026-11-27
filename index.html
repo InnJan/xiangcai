@@ -142,7 +142,7 @@ dialog::backdrop { background: #1b2923a8; }
 dialog h2 { margin: 0 0 13px; font-size: 23px; }
 dialog p { color: var(--muted); line-height: 1.6; }
 .dialog-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 8px; margin-top: 16px; }
-#name { width: 100%; border: 1px solid var(--edge); border-radius: 7px; padding: 8px 10px; background: #ffffff; color: var(--ink); margin-top: 6px; }
+#name, #daily-name { width: 100%; border: 1px solid var(--edge); border-radius: 7px; padding: 8px 10px; background: #ffffff; color: var(--ink); margin-top: 6px; }
 #rankings { list-style: none; padding: 0; margin: 13px 0 0; }
 #rankings li { display: grid; grid-template-columns: 27px 1fr auto; gap: 7px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--edge); font-size: 13px; }
 #rankings li span:nth-child(2) { overflow-wrap: anywhere; }
@@ -215,6 +215,8 @@ dialog p { color: var(--muted); line-height: 1.6; }
         <p>一次投放接连合成两次以上，可获连锁加分。解锁更高等级后，可投放的角色也会升级。两株香菜合成神·香菜，两株神·香菜相撞清屏并奖励 500 分和一枚复活币。每 2,000 分也会获得一枚复活币。</p>
       </section>
       <div class="tile tools">
+        <button id="daily-mode" type="button" hidden>每日挑战</button>
+        <button id="daily-board" type="button" hidden>今日榜</button>
         <button id="show-rank" type="button">本机排行榜</button>
         <button id="sound" type="button" aria-pressed="true">音效开启</button>
         <button id="reset" type="button">重新开始</button>
@@ -241,7 +243,18 @@ dialog p { color: var(--muted); line-height: 1.6; }
   <p id="empty-rank">完成一局后，成绩会显示在这里。</p>
   <form method="dialog" class="dialog-actions"><button class="primary">关闭</button></form>
 </dialog>
-<script>
+<dialog id="daily-rank" aria-labelledby="daily-title">
+  <h2 id="daily-title">今日同题榜</h2>
+  <p id="daily-notice" role="status"></p>
+  <label for="daily-name">公开昵称</label>
+  <input id="daily-name" type="text" maxlength="18" placeholder="香菜路人" autocomplete="off">
+  <ol id="daily-entries"></ol>
+  <div class="dialog-actions">
+    <button id="daily-start" class="primary" type="button">开始每日挑战</button>
+  </div>
+  <form method="dialog" class="dialog-actions"><button>关闭</button></form>
+</dialog>
+<script id="game-script">
 "use strict";
 
 const $ = id => document.getElementById(id);
@@ -266,6 +279,11 @@ const ticketButton = $("remove-ticket");
 const comboIndicator = $("combo");
 const finalPairPoints = 500;
 const dangerSeconds = 1.5;
+const rulesVersion = 1;
+const tickRate = 120;
+const maxTicks = 120 * 60 * 12;
+const maxActions = 850;
+const dailyApi = "";
 const celebration = $("celebration");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const levels = [
@@ -452,6 +470,9 @@ function updateSound() {
 let balls, particles, score, coins, shownLevel, nextLevel, aim, cooldown, state, drops;
 let highestLevel, startingBest, celebrationTimer, comboTimer;
 let tickets = 0;
+let dailySession = null;
+let dailyDraw = 0;
+let roundTick = 0;
 let removalMode = false;
 let removalTarget = null;
 const celebrationQueue = [];
@@ -460,7 +481,24 @@ let previous = 0;
 let accumulator = 0;
 const number = new Intl.NumberFormat("zh-CN");
 
+function dailyPiece(seed, index, levelCount) {
+  let number = (seed + Math.imul(index + 1, 0x9e3779b9)) >>> 0;
+  number = Math.imul(number ^ (number >>> 16), 0x21f0aaad);
+  number = Math.imul(number ^ (number >>> 15), 0x735a2d97);
+  const value = ((number ^ (number >>> 15)) >>> 0) / 0x100000000;
+  const top = Math.min(3 + Math.floor(index / 36), levelCount - 4);
+  if (top === 3) {
+    if (value < .36) return 0;
+    if (value < .65) return 1;
+    return value < .86 ? 2 : 3;
+  }
+  if (value < .18) return top - 3;
+  if (value < .40) return top - 2;
+  return value < .70 ? top - 1 : top;
+}
+
 function randomLevel() {
+  if (dailySession) return dailyPiece(dailySession.seed, dailyDraw++, levels.length);
   const value = Math.random();
   const highestDrop = clamp(highestLevel - 2, 3, levels.length - 4);
   if (highestDrop === 3) {
@@ -508,6 +546,7 @@ function removePiece(ball) {
   if (!removalMode || !ball || tickets === 0) return;
   const index = balls.indexOf(ball);
   if (index < 0) return;
+  recordDailyAction("t", index);
   balls.splice(index, 1);
   tickets--;
   burst(ball.x, ball.y, levels[ball.level].accent, 16);
@@ -526,6 +565,7 @@ function reset() {
   balls = [];
   particles = [];
   score = coins = tickets = cooldown = drops = 0;
+  roundTick = dailyDraw = 0;
   highestLevel = 0;
   startingBest = profile.best;
   clearTimeout(celebrationTimer);
@@ -548,7 +588,7 @@ function addScore(points) {
   coins += Math.floor((score + points) / reviveInterval) - Math.floor(score / reviveInterval);
   tickets += Math.floor((score + points) / ticketInterval) - Math.floor(score / ticketInterval);
   score += points;
-  if (score > profile.best) {
+  if (!isDailyMode() && score > profile.best) {
     profile.best = score;
     saveProfile();
   }
@@ -567,6 +607,8 @@ function makeBall(level, x, y, vx = 0, vy = 0) {
 function drop() {
   if (state !== "playing" || rank.open || removalMode || cooldown > 0) return;
   wakeSound();
+  if (isDailyMode()) aim = Math.round(clamp(aim, 0, width) * 100) / 100;
+  recordDailyAction("d", Math.round(aim * 100));
   const radius = levels[shownLevel].radius;
   const ball = makeBall(shownLevel, clamp(aim, left + radius, right - radius), Math.max(spawnY, radius + 3), 0, 42);
   ball.chain = { drop: ++drops, count: 0 };
@@ -731,6 +773,11 @@ function collide(a, b, distance, dx, dy, overlap) {
 }
 
 function advance() {
+  roundTick++;
+  if (isDailyMode() && roundTick >= maxTicks) {
+    finishDailyAtLimit();
+    return;
+  }
   cooldown = Math.max(0, cooldown - step);
   for (const ball of balls) {
     ball.age += step;
@@ -799,6 +846,12 @@ function showResult() {
 
 function finish() {
   if (state === "ended") return;
+  if (dailySession) {
+    if (state === "revive") recordDailyAction("f");
+    state = "ended";
+    finishDaily();
+    return;
+  }
   state = "ended";
   profile.scores.push({ name: profile.name.trim() || "香菜路人", score });
   profile.scores.sort((a, b) => b.score - a.score);
@@ -814,6 +867,7 @@ function finish() {
 function revive() {
   if (state !== "revive" || coins <= 0) return;
   wakeSound();
+  recordDailyAction("r");
   coins--;
   balls = balls.filter(ball => {
     if (ball.y - ball.radius >= line) {
@@ -937,7 +991,7 @@ function frame(now) {
   if (!previous) previous = now;
   const elapsed = Math.min(.05, (now - previous) / 1000);
   previous = now;
-  if (state === "playing" && !rank.open && !removalMode) {
+  if (state === "playing" && !rank.open && !$("daily-rank").open && !removalMode) {
     accumulator += elapsed;
     while (accumulator >= step && state === "playing") {
       advance();
@@ -995,7 +1049,7 @@ ticketButton.addEventListener("click", () => {
 });
 
 document.addEventListener("keydown", event => {
-  if (event.ctrlKey || event.altKey || event.metaKey || rank.open || result.open) return;
+  if (event.ctrlKey || event.altKey || event.metaKey || rank.open || result.open || $("daily-rank").open) return;
   const key = event.key.toLowerCase();
   if (removalMode && key === "escape") {
     event.preventDefault();
@@ -1012,7 +1066,7 @@ document.addEventListener("keydown", event => {
   }
   if (!["arrowleft", "arrowright", " ", "enter", "r"].includes(key)) return;
   event.preventDefault();
-  if (key === "r" && !event.repeat) reset();
+  if (key === "r" && !event.repeat) startRegular();
   if ((key === " " || key === "enter") && !event.repeat) drop();
   if (key === "arrowleft") aim = clamp(aim - 12, left, right);
   if (key === "arrowright") aim = clamp(aim + 12, left, right);
@@ -1039,6 +1093,98 @@ function showRank() {
   rank.querySelector("button").focus();
 }
 
+function isDailyMode() { return dailySession !== null; }
+
+function recordDailyAction(kind, value) {
+  if (!dailySession || dailySession.actions.length > maxActions) return;
+  const action = [roundTick, kind];
+  if (value !== undefined) action.push(value);
+  dailySession.actions.push(action);
+}
+
+function startRegular() {
+  dailySession = null;
+  $("end-rank").textContent = "排行榜";
+  document.querySelector(".header-note").textContent = "两两相碰，合成香菜";
+  reset();
+}
+
+async function dailyRequest(path, body) {
+  const options = body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {};
+  const response = await fetch(dailyApi + path, options);
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(detail.error || "今日榜暂时不可用");
+  }
+  return response.json();
+}
+
+async function showDailyBoard() {
+  const dialog = $("daily-rank");
+  if (removalMode) setRemovalMode(false);
+  if (!dialog.open) {
+    $("daily-name").value = profile.name;
+    dialog.showModal();
+  }
+  $("daily-notice").textContent = "正在加载今日榜…";
+  $("daily-entries").replaceChildren();
+  try {
+    const { day, entries } = await dailyRequest("/board");
+    $("daily-notice").textContent = day + "（北京时间） · " +
+      (entries.length ? "同一投放顺序，每人取最高分" : "还没有人成绩上榜") + "。开始挑战即同意公开昵称和成绩。";
+    for (const entry of entries) {
+      const item = document.createElement("li");
+      item.textContent = entry.name + " · " + number.format(entry.score) + " 分";
+      $("daily-entries").append(item);
+    }
+  } catch (error) {
+    $("daily-notice").textContent = error.message;
+  }
+}
+
+async function startDaily() {
+  const button = $("daily-start");
+  button.disabled = true;
+  const name = $("daily-name").value.trim() || "香菜路人";
+  let player = "";
+  try { player = localStorage.getItem("cilantro-daily-player") || ""; } catch {}
+  try {
+    const opened = await dailyRequest("/start", { player, rulesVersion });
+    try { localStorage.setItem("cilantro-daily-player", opened.player); } catch {}
+    dailySession = { ...opened, name, actions: [] };
+    $("daily-rank").close();
+    $("end-rank").textContent = "今日榜";
+    document.querySelector(".header-note").textContent = "每日同题 · " + opened.day;
+    reset();
+  } catch (error) {
+    $("daily-notice").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function finishDailyAtLimit() {
+  finish();
+}
+
+async function finishDaily() {
+  const session = dailySession;
+  const message = $("result-message");
+  const summary = "本局 " + number.format(score) + " 分";
+  $("result-title").textContent = "每日挑战结束";
+  $("revive").hidden = $("finish").hidden = true;
+  $("end-rank").hidden = $("play-again").hidden = false;
+  if (!result.open) result.showModal();
+  message.textContent = summary + " · 正在校验";
+  try {
+    if (session.actions.length > maxActions) throw new Error("本局操作数超过榜单上限");
+    await dailyRequest("/submit", { run: session.run, actions: session.actions, tick: roundTick, name: session.name, score });
+    if (dailySession === session) message.textContent = summary + " · 已提交今日榜";
+  } catch (error) {
+    if (dailySession === session) message.textContent = summary + " · " + error.message;
+  }
+}
+
 $("name").addEventListener("input", event => {
   profile.name = event.target.value;
   saveProfile();
@@ -1047,9 +1193,9 @@ $("name").addEventListener("keydown", event => {
   if (event.key === "Enter" && !event.isComposing) rank.close();
 });
 $("show-rank").addEventListener("click", showRank);
-$("end-rank").addEventListener("click", showRank);
-$("play-again").addEventListener("click", reset);
-$("reset").addEventListener("click", reset);
+$("end-rank").addEventListener("click", () => isDailyMode() ? showDailyBoard() : showRank());
+$("play-again").addEventListener("click", startRegular);
+$("reset").addEventListener("click", startRegular);
 $("revive").addEventListener("click", revive);
 $("finish").addEventListener("click", finish);
 result.addEventListener("cancel", event => event.preventDefault());
@@ -1059,6 +1205,13 @@ $("sound").addEventListener("click", () => {
   updateSound();
   saveProfile();
 });
+if (dailyApi) {
+  for (const id of ["daily-mode", "daily-board"]) {
+    $(id).hidden = false;
+    $(id).addEventListener("click", showDailyBoard);
+  }
+  $("daily-start").addEventListener("click", startDaily);
+}
 updateSound();
 reset();
 requestAnimationFrame(frame);

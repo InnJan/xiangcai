@@ -1,0 +1,17 @@
+# 每日同题榜原型
+
+需要 Node.js 24。可在仓库根目录用以下命令生成校验逻辑、跑测试和预览。
+
+```sh
+node daily/build-engine.mjs
+node daily/test.mjs
+node daily/preview.mjs
+```
+
+打开 [本地预览](http://127.0.0.1:8787/) 后选择「每日挑战」。本地成绩用内存 SQLite 保存，服务重启即清空。普通模式与每日同题模式分别计分。
+
+- `build-engine.mjs` 从 `index.html` 提取物理和合成规则，生成供服务端使用的 `engine.mjs`。修改相关玩法后，重新生成并升级前后端的 `rulesVersion`。
+- `worker.mjs` 提供 `GET /board`、`POST /start`、`POST /submit`。开局发放带签名的匿名身份和对局编号。结算由服务器复现投放、移除券和复活操作，校验后才写入成绩。
+- 榜单按北京时间分日，保存同一匿名浏览器身份的最高分，只显示昵称和分数。重新安装浏览器或清理站点数据会生成新身份。
+- 公开部署需要支持长局回放的 HTTPS 执行环境、数据库和至少 32 字符的随机 `HMAC_SECRET`。Cloudflare D1 要绑定为 `DB`，先应用 `schema.sql`。通过 `ALLOW_ORIGINS` 配置允许访问的游戏 HTTPS 源，再在网页中配置 `dailyApi`。当前主站的公开版本没有接上日榜。
+- 测试中两万多帧的一次性回放耗时数百毫秒。Cloudflare Workers Free 的单次 HTTP 请求 CPU 上限为 10 毫秒，当前回放实现适合先在本地或具备相应 CPU 配额的服务验证。跨浏览器正式开放前还需用实际浏览器录制对局和复现结果。
