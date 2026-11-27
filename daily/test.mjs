@@ -23,8 +23,9 @@ const frontend=new Function('document','window','localStorage','matchMedia','Ima
   return {
     start(seed, version = rulesVersion){ dailySession={seed, rulesVersion:version, actions:[], name:"联调"}; reset(); },
     aimAt(x){ aim=x; drop(); },
-    state(){return {score, state, cooldown, roundTick, actions:dailySession.actions, shownLevel, nextLevel, balls, tickets, drops}; },
-    advance, revive, finish, removePiece, setRemovalMode, dangerLine, windAt, windAim, addScore
+    state(){return {score, state, cooldown, roundTick, actions:dailySession.actions, shownLevel, nextLevel, balls, tickets, drops, highestLevel}; },
+    setHighest(level){ highestLevel = level; },
+    advance, revive, finish, removePiece, setRemovalMode, dangerLine, windAt, windAim, addScore, mixedDrop
   };
 `)(doc,{}, {getItem:()=>null,setItem(){}},()=>({matches:true}),class extends Element{constructor(){super();this.complete=true;this.naturalWidth=240;}},()=>{},()=>{},()=>{},async()=>({ok:true,json:async()=>({})}));
 const db=new DatabaseSync(':memory:');
@@ -55,7 +56,11 @@ function play(seed, pattern, version = rulesVersion) {
       frontend.setRemovalMode(true);
       frontend.removePiece(snapshot.balls[0]);
     }
-    if(snapshot.cooldown===0 && i % 90 === 0) frontend.aimAt(pattern===1?25+((i*191)%385):220);
+    if(snapshot.cooldown===0 && i % 90 === 0) {
+      const earlyCap = snapshot.balls.reduce((max, ball) => Math.max(max, ball.level), 0);
+      frontend.aimAt(pattern===1?25+((i*191)%385):220);
+      if(version===4 && snapshot.highestLevel<4) assert(frontend.state().balls.at(-1).level <= earlyCap);
+    }
     frontend.advance();
   }
   return frontend.state();
@@ -64,6 +69,9 @@ const first=play(seeded.seed,0);
 const second=play(again.seed,1);
 const revived=play(again.seed,2,2);
 const legacy=play(again.seed,1,2);
+const previous=play(again.seed,1,3);
+assert.equal(legacy.score,1552);
+assert.equal(previous.score,1760);
 assert(first.score>0&&second.score>0);
 for(const [mode,round] of [first,second].entries()){
 const t=performance.now();
@@ -73,11 +81,23 @@ assert.equal(calculated?.score,round.score);
 console.log('round',mode+1,'ticks',round.roundTick,'actions',round.actions.length,'points',round.score,'local replay ms',time);
 }
 assert.equal(replay(again.seed,legacy.actions,legacy.roundTick,2)?.score,legacy.score);
+assert.equal(replay(again.seed,previous.actions,previous.roundTick,3)?.score,previous.score);
 assert.equal(replay(again.seed,revived.actions,revived.roundTick,2)?.score,revived.score);
 assert(legacy.actions.some(a=>a[1]==='t'));
 assert(revived.actions.some(a=>a[1]==='r'));
 assert.deepEqual([24,25,26,27,28,50,53].map(frontend.dangerLine),[86,102,102,102,86,102,86]);
+frontend.start(seeded.seed,2);
 assert.deepEqual([10,11,12,22,33].map(frontend.windAt),[0,-12,0,12,-12]);
+frontend.start(seeded.seed);
+assert.equal(frontend.state().shownLevel,0);
+assert.equal(frontend.state().nextLevel,0);
+assert.equal(frontend.mixedDrop(.999),0);
+frontend.state().balls.push({level:1});
+assert.equal(frontend.mixedDrop(.999),1);
+frontend.setHighest(14);
+const mixed=Array.from({length:100},(_,i)=>frontend.mixedDrop((i+.5)/100));
+assert.equal(mixed.filter(level=>level<4).length,30);
+assert(mixed.some(level=>level>10));
 frontend.start(seeded.seed);
 assert.deepEqual([10,11,12,22,33].map(frontend.windAt),[0,-110,0,110,-110]);
 frontend.addScore(1999);
@@ -120,10 +140,11 @@ assert.equal(oldRun.rulesVersion,2);
 assert.equal((await send(legacy,oldRun.run,'旧规则测试'))[0],200);
 const oldBoard=await call('/board');
 assert.equal(oldBoard[1].entries[0].name,'旧规则测试');
-let result=await call('/board?rulesVersion=3');
+assert.equal((await call('/board?rulesVersion=3'))[1].entries.length,0);
+let result=await call('/board?rulesVersion=4');
 assert.equal(result[1].entries.length,1);
 assert.equal(result[1].entries[0].score,Math.max(first.score,second.score));
-assert.equal((await call('/board?rulesVersion=3',null,now+8*3600000))[1].day,'2026-11-28');
-assert.equal((await call('/board?rulesVersion=3',null,now+8*3600000))[1].entries.length,0);
+assert.equal((await call('/board?rulesVersion=4',null,now+8*3600000))[1].day,'2026-11-28');
+assert.equal((await call('/board?rulesVersion=4',null,now+8*3600000))[1].entries.length,0);
 assert.equal((await call('/board',null,now,'https://wrong.test'))[0],403);
 console.log('PASS: deterministic frontend/server replay, tickets and revives, tamper rejection, idempotency, daily highest score, Beijing date rollover, and origin policy.');

@@ -11,7 +11,7 @@ const reviveInterval = 2000;
 const ticketInterval = 2000;
 const finalPairPoints = 500;
 const dangerSeconds = 1.5;
-const rulesVersion = 3;
+const rulesVersion = 4;
 const tickRate = 120;
 const maxTicks = 120 * 60 * 12;
 const maxActions = 850;
@@ -19,8 +19,8 @@ const levels = [{"radius":12,"points":0},{"radius":15,"points":1},{"radius":18,"
 
 function replay(seed, actions, finalTick, version = rulesVersion) {
   if (!Array.isArray(actions) || actions.length > maxActions || !Number.isInteger(finalTick) || finalTick < 1 || finalTick > maxTicks) return null;
-  let draw = 0;
-  function randomLevel() { return dailyPiece(seed, draw++, levels.length); }
+  let dailyDraw = 0;
+  const dailySession = { seed };
   let balls = [], particles = [];
   let score = 0, coins = 0, tickets = 0, cooldown = 0, drops = 0, highestLevel = 0, roundTick = 0;
   let state = "playing", aim = width / 2, removalMode = false;
@@ -37,20 +37,73 @@ function replay(seed, actions, finalTick, version = rulesVersion) {
   function setRemovalMode(active) { removalMode = active; }
   function showResult() { state = coins > 0 ? "revive" : "ended"; }
 
-function dailyPiece(seed, index, levelCount) {
+function dailyRoll(seed, index) {
   let number = (seed + Math.imul(index + 1, 0x9e3779b9)) >>> 0;
   number = Math.imul(number ^ (number >>> 16), 0x21f0aaad);
   number = Math.imul(number ^ (number >>> 15), 0x735a2d97);
-  const value = ((number ^ (number >>> 15)) >>> 0) / 0x100000000;
+  return ((number ^ (number >>> 15)) >>> 0) / 0x100000000;
+}
+
+function wideDrop(value, top) {
+  if (value < .18) return top - 3;
+  if (value < .40) return top - 2;
+  return value < .70 ? top - 1 : top;
+}
+
+function dailyPiece(seed, index, levelCount) {
+  const value = dailyRoll(seed, index);
   const top = Math.min(3 + Math.floor(index / 36), levelCount - 4);
   if (top === 3) {
     if (value < .36) return 0;
     if (value < .65) return 1;
     return value < .86 ? 2 : 3;
   }
-  if (value < .18) return top - 3;
-  if (value < .40) return top - 2;
-  return value < .70 ? top - 1 : top;
+  return wideDrop(value, top);
+}
+
+function earlyDropCap() {
+  return balls.reduce((maximum, ball) => ball.dead ? maximum : Math.max(maximum, ball.level), 0);
+}
+
+function mixedDrop(value) {
+  if (highestLevel < 4) {
+    const cap = earlyDropCap();
+    let weight = value * ((cap + 1) * (cap + 2) / 2);
+    for (let level = 0; level < cap; level++) {
+      weight -= level + 1;
+      if (weight < 0) return level;
+    }
+    return cap;
+  }
+  if (value < .30) return Math.floor(value / .30 * 4);
+  const top = clamp(highestLevel - 1, 3, levels.length - 4);
+  return wideDrop((value - .30) / .70, top);
+}
+
+function lowerEarlyQueue() {
+  if (activeRulesVersion() < 4 || highestLevel >= 4) return;
+  const cap = earlyDropCap();
+  if (shownLevel <= cap && nextLevel <= cap) return;
+  shownLevel = Math.min(shownLevel, cap);
+  nextLevel = Math.min(nextLevel, cap);
+  updateDropPreview();
+}
+
+function randomLevel() {
+  if (activeRulesVersion() >= 4) {
+    const value = dailySession ? dailyRoll(dailySession.seed, dailyDraw++) : Math.random();
+    return mixedDrop(value);
+  }
+  if (dailySession) return dailyPiece(dailySession.seed, dailyDraw++, levels.length);
+  const value = Math.random();
+  const highestDrop = clamp(highestLevel - 2, 3, levels.length - 4);
+  if (highestDrop === 3) {
+    if (value < .36) return 0;
+    if (value < .65) return 1;
+    if (value < .86) return 2;
+    return 3;
+  }
+  return wideDrop(value, highestDrop);
 }
 
 function inspectionRemaining(count) {
@@ -78,6 +131,7 @@ function removePiece(ball) {
   if (index < 0) return;
   recordDailyAction("t", index);
   balls.splice(index, 1);
+  lowerEarlyQueue();
   tickets--;
   burst(ball.x, ball.y, levels[ball.level].accent, 16);
   setRemovalMode(false);
@@ -108,6 +162,7 @@ function makeBall(level, x, y, vx = 0, vy = 0) {
 function drop() {
   if (state !== "playing" || rank.open || removalMode || cooldown > 0) return;
   wakeSound();
+  lowerEarlyQueue();
   if (isDailyMode()) aim = Math.round(clamp(aim, 0, width) * 100) / 100;
   recordDailyAction("d", Math.round(aim * 100));
   const radius = levels[shownLevel].radius;
@@ -300,6 +355,7 @@ function revive() {
     burst(ball.x, ball.y, levels[ball.level].accent, 14);
     return false;
   });
+  lowerEarlyQueue();
   state = "playing";
   cooldown = .22;
   result.close();
@@ -400,7 +456,7 @@ async function readJson(request) {
 }
 
 function supportsRules(version) {
-  return version === 2 || version === rulesVersion;
+  return version === 2 || version === 3 || version === rulesVersion;
 }
 
 async function board(db, day, version) {

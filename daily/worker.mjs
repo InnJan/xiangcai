@@ -65,7 +65,7 @@ async function readJson(request) {
 }
 
 function supportsRules(version) {
-  return version === 2 || version === rulesVersion;
+  return version === 2 || version === 3 || version === rulesVersion;
 }
 
 async function board(db, day, version) {
