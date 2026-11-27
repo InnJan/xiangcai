@@ -57,6 +57,12 @@ h1 { margin: 0; font-size: clamp(29px, 5vw, 45px); line-height: 1; letter-spacin
 .board { position: relative; background: #edf3e9; border: 1px solid #a0b197; border-radius: 10px; overflow: hidden; }
 #field { display: block; width: 100%; aspect-ratio: 440 / 478; touch-action: none; cursor: crosshair; }
 #field:focus-visible { outline-offset: -4px; }
+#field[data-remove] { cursor: cell; }
+.board-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+#remove-ticket { font-size: 12px; min-height: 36px; padding: 6px 10px; white-space: nowrap; }
+#remove-ticket:disabled { opacity: .52; cursor: default; }
+#remove-ticket[aria-pressed="true"] { background: #285c3e; color: #fff; border-color: #285c3e; }
+#ticket-progress { font-size: 11px; color: var(--muted); }
 .celebration {
   position: absolute; inset: 0; pointer-events: none; overflow: hidden;
   display: grid; place-items: center; z-index: 1; opacity: 0;
@@ -180,7 +186,14 @@ dialog p { color: var(--muted); line-height: 1.6; }
           </div>
         </div>
       </div>
-      <div class="board-meta"><span id="hint">拖动瞄准 · 松手投放</span><span id="coins" aria-live="polite">复活币 × 0</span></div>
+      <div class="board-meta">
+        <span id="hint" aria-live="polite">拖动瞄准 · 松手投放</span>
+        <span id="coins" aria-live="polite">复活币 × 0</span>
+      </div>
+      <div class="board-meta board-actions">
+        <button id="remove-ticket" type="button" aria-pressed="false" aria-describedby="ticket-progress" disabled>移除券 × 0</button>
+        <span id="ticket-progress">每满 300 分送一张</span>
+      </div>
     </section>
     <aside aria-label="游戏选项">
       <section class="tile">
@@ -235,6 +248,8 @@ const step = 1 / 120;
 const clamp = (value, min, max) => Math.max(min, Math.min(value, max));
 const storageKey = "cilantro-merge-1";
 const reviveInterval = 2000;
+const ticketInterval = 300;
+const ticketButton = $("remove-ticket");
 const finalPairPoints = 500;
 const dangerSeconds = 1.5;
 const celebration = $("celebration");
@@ -421,6 +436,9 @@ function updateSound() {
 
 let balls, particles, score, coins, shownLevel, nextLevel, aim, cooldown, state, drops;
 let highestLevel, startingBest, celebrationTimer;
+let tickets = 0;
+let removalMode = false;
+let removalTarget = null;
 const celebrationQueue = [];
 let playerId = null;
 let previous = 0;
@@ -447,13 +465,52 @@ function updateHud() {
   $("best").textContent = number.format(profile.best);
   $("record-flag").hidden = startingBest === 0 || score <= startingBest;
   $("coins").textContent = "复活币 × " + coins;
+  updateRemovalControl();
+}
+
+function updateRemovalControl() {
+  ticketButton.textContent = (removalMode ? "取消选择" : "移除券 × " + tickets);
+  ticketButton.disabled = !removalMode && (state !== "playing" || tickets === 0 || balls.length === 0);
+  ticketButton.setAttribute("aria-pressed", String(removalMode));
+  $("ticket-progress").textContent = removalMode ? "方向键选角色，空格确认" :
+    "下张移除券：" + number.format((Math.floor(score / ticketInterval) + 1) * ticketInterval) + " 分";
+}
+
+function setRemovalMode(active) {
+  removalMode = active;
+  removalTarget = active ? balls.reduce((top, ball) => ball.y < top.y ? ball : top) : null;
+  if (active) {
+    canvas.setAttribute("data-remove", "");
+    canvas.focus({ preventScroll: true });
+  } else {
+    canvas.removeAttribute("data-remove");
+  }
+  $("hint").textContent = active ? "点一个角色移除，也可再次点按钮取消" : "拖动瞄准 · 松手投放";
+  updateRemovalControl();
+}
+
+function removePiece(ball) {
+  if (!removalMode || !ball || tickets === 0) return;
+  const index = balls.indexOf(ball);
+  if (index < 0) return;
+  balls.splice(index, 1);
+  tickets--;
+  burst(ball.x, ball.y, levels[ball.level].accent, 16);
+  setRemovalMode(false);
+  playSound(610, .18);
+}
+
+function selectRemovalTarget(offset) {
+  const ordered = [...balls].sort((a, b) => a.x - b.x || a.y - b.y);
+  const index = ordered.indexOf(removalTarget);
+  removalTarget = index < 0 ? ordered[0] : ordered[(index + offset + ordered.length) % ordered.length];
 }
 
 function reset() {
   if (result.open) result.close();
   balls = [];
   particles = [];
-  score = coins = cooldown = drops = 0;
+  score = coins = tickets = cooldown = drops = 0;
   highestLevel = 0;
   startingBest = profile.best;
   clearTimeout(celebrationTimer);
@@ -464,6 +521,7 @@ function reset() {
   aim = width / 2;
   state = "playing";
   playerId = null;
+  setRemovalMode(false);
   updateHud();
   drawIcon(nextCanvas, nextLevel);
   nextCanvas.setAttribute("aria-label", "下一个：" + levels[nextLevel].name);
@@ -471,6 +529,7 @@ function reset() {
 
 function addScore(points) {
   coins += Math.floor((score + points) / reviveInterval) - Math.floor(score / reviveInterval);
+  tickets += Math.floor((score + points) / ticketInterval) - Math.floor(score / ticketInterval);
   score += points;
   if (score > profile.best) {
     profile.best = score;
@@ -488,7 +547,7 @@ function makeBall(level, x, y, vx = 0, vy = 0) {
 }
 
 function drop() {
-  if (state !== "playing" || rank.open || cooldown > 0) return;
+  if (state !== "playing" || rank.open || removalMode || cooldown > 0) return;
   wakeSound();
   const radius = levels[shownLevel].radius;
   balls.push(makeBall(shownLevel, clamp(aim, left + radius, right - radius), Math.max(spawnY, radius + 3), 0, 42));
@@ -498,6 +557,7 @@ function drop() {
   nextCanvas.setAttribute("aria-label", "下一个：" + levels[nextLevel].name);
   cooldown = .32;
   drops++;
+  updateRemovalControl();
   playSound(225, .10, .035);
 }
 
@@ -762,7 +822,8 @@ function render(now = 0) {
   const ctx = context;
   ctx.setTransform(2, 0, 0, 2, 0, 0);
   ctx.drawImage(backdrop, 0, 0, width, height);
-  const danger = balls.some(ball => ball.danger > .12);
+  const dangerProgress = balls.reduce((maximum, ball) => Math.max(maximum, ball.danger), 0) / dangerSeconds;
+  const danger = dangerProgress > .08;
   if (danger) {
     ctx.fillStyle = "#bc68421d";
     ctx.fillRect(0, 0, width, line);
@@ -775,6 +836,10 @@ function render(now = 0) {
   ctx.lineTo(right, line + .5);
   ctx.stroke();
   ctx.setLineDash([]);
+  if (danger) {
+    ctx.fillStyle = "#a74833";
+    ctx.fillRect(left, line - 2, (right - left) * clamp(dangerProgress, 0, 1), 3);
+  }
   ctx.font = '11px "PingFang SC", "Microsoft YaHei", sans-serif';
   ctx.fillStyle = "#89573f";
   ctx.fillText("警戒线", 14, line - 8);
@@ -784,7 +849,7 @@ function render(now = 0) {
     paintPiece(ctx, cilantroLevel, width / 2, 279, 78);
     ctx.restore();
   }
-  if (state === "playing") {
+  if (state === "playing" && !removalMode) {
     const r = levels[shownLevel].radius;
     const x = clamp(aim, left + r, right - r);
     const target = balls.reduce((y, ball) => {
@@ -807,6 +872,12 @@ function render(now = 0) {
   for (const ball of balls) {
     paintPiece(ctx, ball.level, ball.x, ball.y, ball.radius, ball.rotation, now / 1000);
   }
+  if (removalMode && removalTarget) {
+    circle(ctx, removalTarget.x, removalTarget.y, removalTarget.radius + 3);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "#2f7850";
+    ctx.stroke();
+  }
   for (const particle of particles) {
     ctx.globalAlpha = particle.life / particle.max;
     ctx.fillStyle = particle.color;
@@ -820,7 +891,7 @@ function frame(now) {
   if (!previous) previous = now;
   const elapsed = Math.min(.05, (now - previous) / 1000);
   previous = now;
-  if (state === "playing" && !rank.open) {
+  if (state === "playing" && !rank.open && !removalMode) {
     accumulator += elapsed;
     while (accumulator >= step && state === "playing") {
       advance();
@@ -835,24 +906,35 @@ function frame(now) {
 
 function position(event) {
   const rect = canvas.getBoundingClientRect();
-  aim = (event.clientX - rect.left) * width / rect.width;
+  const x = (event.clientX - rect.left) * width / rect.width;
+  if (!removalMode) {
+    aim = x;
+    return null;
+  }
+  const y = (event.clientY - rect.top) * height / rect.height;
+  return balls.findLast(ball => (ball.x - x) ** 2 + (ball.y - y) ** 2 <= ball.radius ** 2) ?? null;
 }
 
 canvas.addEventListener("pointerdown", event => {
   if (event.button !== 0 || playerId !== null || state !== "playing") return;
   wakeSound();
   playerId = event.pointerId;
-  position(event);
+  const target = position(event);
+  if (removalMode) removalTarget = target;
   canvas.setPointerCapture(playerId);
 });
 canvas.addEventListener("pointermove", event => {
-  if (playerId === event.pointerId || (playerId === null && event.pointerType === "mouse")) position(event);
+  if (playerId === event.pointerId || (playerId === null && event.pointerType === "mouse")) {
+    const target = position(event);
+    if (removalMode) removalTarget = target;
+  }
 });
 canvas.addEventListener("pointerup", event => {
   if (playerId !== event.pointerId) return;
-  position(event);
+  const target = position(event);
   playerId = null;
-  drop();
+  if (removalMode) removePiece(target);
+  else drop();
 });
 for (const type of ["pointercancel", "lostpointercapture"]) {
   canvas.addEventListener(type, event => {
@@ -860,10 +942,28 @@ for (const type of ["pointercancel", "lostpointercapture"]) {
   });
 }
 
+ticketButton.addEventListener("click", () => {
+  if (state === "playing" && tickets > 0 && balls.length > 0 && playerId === null) {
+    setRemovalMode(!removalMode);
+  }
+});
+
 document.addEventListener("keydown", event => {
-  if (event.ctrlKey || event.altKey || event.metaKey || rank.open || result.open ||
-      event.target.closest?.("input, button")) return;
+  if (event.ctrlKey || event.altKey || event.metaKey || rank.open || result.open) return;
   const key = event.key.toLowerCase();
+  if (removalMode && key === "escape") {
+    event.preventDefault();
+    setRemovalMode(false);
+    return;
+  }
+  if (event.target.closest?.("input, button")) return;
+  if (removalMode) {
+    if (!["arrowleft", "arrowright", " ", "enter"].includes(key)) return;
+    event.preventDefault();
+    if (key === "arrowleft" || key === "arrowright") selectRemovalTarget(key === "arrowleft" ? -1 : 1);
+    else if (!event.repeat) removePiece(removalTarget);
+    return;
+  }
   if (!["arrowleft", "arrowright", " ", "enter", "r"].includes(key)) return;
   event.preventDefault();
   if (key === "r" && !event.repeat) reset();
@@ -874,6 +974,7 @@ document.addEventListener("keydown", event => {
 
 function showRank() {
   if (rank.open) return;
+  if (removalMode) setRemovalMode(false);
   $("name").value = profile.name;
   $("rankings").replaceChildren();
   profile.scores.forEach((entry, index) => {
