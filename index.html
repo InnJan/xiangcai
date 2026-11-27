@@ -218,8 +218,7 @@ dialog p { color: var(--muted); line-height: 1.6; }
         <p>一次投放接连合成两次以上，可获连锁加分。每 25 投会有一次突击检查，警戒线压低 3 投。每 11 投会吹偏一次，箭头会提前提示方向。两株神·香菜相撞可清屏，每 2,000 分可获得一枚复活币。</p>
       </section>
       <div class="tile tools">
-        <button id="daily-mode" type="button" hidden>每日挑战</button>
-        <button id="daily-board" type="button" hidden>今日榜</button>
+        <button id="daily-mode" type="button" hidden>每日挑战 · 今日榜</button>
         <button id="show-rank" type="button">本机排行榜</button>
         <button id="sound" type="button" aria-pressed="true">音效开启</button>
         <button id="reset" type="button">重新开始</button>
@@ -250,7 +249,7 @@ dialog p { color: var(--muted); line-height: 1.6; }
   <h2 id="daily-title">今日同题榜</h2>
   <p id="daily-notice" role="status"></p>
   <label for="daily-name">公开昵称</label>
-  <input id="daily-name" type="text" maxlength="18" placeholder="香菜路人" autocomplete="off">
+  <input id="daily-name" type="text" maxlength="18" placeholder="填一个上榜昵称" autocomplete="nickname">
   <ol id="daily-entries"></ol>
   <div class="dialog-actions">
     <button id="daily-start" class="primary" type="button">开始每日挑战</button>
@@ -286,7 +285,7 @@ const rulesVersion = 2;
 const tickRate = 120;
 const maxTicks = 120 * 60 * 12;
 const maxActions = 850;
-const dailyApi = "";
+const dailyApi = "https://gzxsunryhsxyvyjbgygc.supabase.co/functions/v1/cilantro-board";
 const celebration = $("celebration");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const levels = [
@@ -1168,7 +1167,7 @@ async function showDailyBoard() {
   try {
     const { day, entries } = await dailyRequest("/board");
     $("daily-notice").textContent = day + "（北京时间） · " +
-      (entries.length ? "同一投放顺序，每人取最高分" : "还没有人成绩上榜") + "。开始挑战即同意公开昵称和成绩。";
+      (entries.length ? "同一投放顺序，每人取最高分" : "今天还没有成绩上榜") + "。开始挑战即同意公开昵称和成绩。";
     for (const entry of entries) {
       const item = document.createElement("li");
       item.textContent = entry.name + " · " + number.format(entry.score) + " 分";
@@ -1181,7 +1180,12 @@ async function showDailyBoard() {
 
 async function startDaily() {
   const button = $("daily-start");
-  const name = $("daily-name").value.trim().normalize("NFC") || "香菜路人";
+  const name = $("daily-name").value.trim().normalize("NFC");
+  if (!name) {
+    $("daily-notice").textContent = "先填一个公开昵称，再开始挑战。";
+    $("daily-name").focus();
+    return;
+  }
   if (name.length > 18 || /[\p{Cc}\p{Cf}]/u.test(name)) {
     $("daily-notice").textContent = "昵称须为 1–18 个可见字符。";
     return;
@@ -1250,10 +1254,8 @@ $("sound").addEventListener("click", () => {
   saveProfile();
 });
 if (dailyApi) {
-  for (const id of ["daily-mode", "daily-board"]) {
-    $(id).hidden = false;
-    $(id).addEventListener("click", showDailyBoard);
-  }
+  $("daily-mode").hidden = false;
+  $("daily-mode").addEventListener("click", showDailyBoard);
   $("daily-start").addEventListener("click", startDaily);
 }
 updateSound();
