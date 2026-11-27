@@ -208,7 +208,7 @@ dialog p { color: var(--muted); line-height: 1.6; }
       <div id="traps" role="status" hidden></div>
       <div class="board-meta board-actions">
         <button id="remove-ticket" type="button" aria-pressed="false" aria-describedby="ticket-progress" disabled>移除券 × 0</button>
-        <span id="ticket-progress">每满 300 分送一张</span>
+        <span id="ticket-progress">每满 2,000 分送一张</span>
       </div>
     </section>
     <aside aria-label="游戏选项">
@@ -276,12 +276,12 @@ const step = 1 / 120;
 const clamp = (value, min, max) => Math.max(min, Math.min(value, max));
 const storageKey = "cilantro-merge-1";
 const reviveInterval = 2000;
-const ticketInterval = 300;
+const ticketInterval = 2000;
 const ticketButton = $("remove-ticket");
 const comboIndicator = $("combo");
 const finalPairPoints = 500;
 const dangerSeconds = 1.5;
-const rulesVersion = 2;
+const rulesVersion = 3;
 const tickRate = 120;
 const maxTicks = 120 * 60 * 12;
 const maxActions = 850;
@@ -525,7 +525,13 @@ function dangerLine(count) {
 
 function windAt(throwNumber) {
   if (throwNumber % 11 !== 0) return 0;
-  return throwNumber % 22 === 0 ? 12 : -12;
+  const distance = activeRulesVersion() === 2 ? 12 : width / 4;
+  return throwNumber % 22 === 0 ? distance : -distance;
+}
+
+function windAim(x, radius, wind) {
+  if (activeRulesVersion() === 2 || !wind) return x;
+  return clamp(x, left + radius + Math.max(0, -wind), right - radius - Math.max(0, wind));
 }
 
 function updateDropPreview() {
@@ -541,7 +547,7 @@ function updateDropPreview() {
   const wind = windAt(drops + 1);
   if (approaching) notices.push("下一投触发突击检查");
   if (remaining > 0) notices.push("突击检查 · 警戒线压低");
-  if (wind) notices.push(wind < 0 ? "这颗会向左吹偏" : "这颗会向右吹偏");
+  if (wind) notices.push((wind < 0 ? "这颗向左偏移" : "这颗向右偏移") + "四分之一棋盘");
   $("traps").textContent = notices.join("　·　");
   $("traps").hidden = notices.length === 0;
 }
@@ -618,7 +624,8 @@ function reset() {
 
 function addScore(points) {
   coins += Math.floor((score + points) / reviveInterval) - Math.floor(score / reviveInterval);
-  tickets += Math.floor((score + points) / ticketInterval) - Math.floor(score / ticketInterval);
+  const interval = activeRulesVersion() === 2 ? 300 : ticketInterval;
+  tickets += Math.floor((score + points) / interval) - Math.floor(score / interval);
   score += points;
   if (!isDailyMode() && score > profile.best) {
     profile.best = score;
@@ -642,7 +649,9 @@ function drop() {
   if (isDailyMode()) aim = Math.round(clamp(aim, 0, width) * 100) / 100;
   recordDailyAction("d", Math.round(aim * 100));
   const radius = levels[shownLevel].radius;
-  const ball = makeBall(shownLevel, clamp(aim + windAt(drops + 1), left + radius, right - radius), Math.max(spawnY, radius + 3), 0, 42);
+  const wind = windAt(drops + 1);
+  const x = windAim(aim, radius, wind);
+  const ball = makeBall(shownLevel, clamp(x + wind, left + radius, right - radius), Math.max(spawnY, radius + 3), 0, 42);
   ball.chain = { drop: ++drops, count: 0 };
   balls.push(ball);
   shownLevel = nextLevel;
@@ -986,7 +995,7 @@ function render(now = 0) {
   }
   if (state === "playing" && !removalMode) {
     const r = levels[shownLevel].radius;
-    const x = clamp(aim, left + r, right - r);
+    const x = clamp(windAim(aim, r, windAt(drops + 1)), left + r, right - r);
     const target = balls.reduce((y, ball) => {
       const dx = ball.x - x;
       const radius = ball.radius + r;
@@ -1129,6 +1138,7 @@ function showRank() {
 }
 
 function isDailyMode() { return dailySession !== null; }
+function activeRulesVersion() { return dailySession?.rulesVersion ?? rulesVersion; }
 
 function recordDailyAction(kind, value) {
   if (!dailySession || dailySession.actions.length > maxActions) return;
@@ -1165,7 +1175,7 @@ async function showDailyBoard() {
   $("daily-notice").textContent = "正在加载今日榜…";
   $("daily-entries").replaceChildren();
   try {
-    const { day, entries } = await dailyRequest("/board");
+    const { day, entries } = await dailyRequest("/board?rulesVersion=" + rulesVersion);
     $("daily-notice").textContent = day + "（北京时间） · " +
       (entries.length ? "同一投放顺序，每人取最高分" : "今天还没有成绩上榜") + "。开始挑战即同意公开昵称和成绩。";
     for (const entry of entries) {
