@@ -135,7 +135,7 @@ function removePiece(ball) {
   tickets--;
   burst(ball.x, ball.y, levels[ball.level].accent, 16);
   setRemovalMode(false);
-  playSound(610, .18);
+  playSound("remove");
 }
 
 function addScore(points) {
@@ -176,7 +176,8 @@ function drop() {
   updateDropPreview();
   cooldown = .32;
   updateRemovalControl();
-  playSound(225, .10, .035);
+  playSound(wind ? "wind" : "drop");
+  if (drops % 25 === 0) playSound("inspection");
 }
 
 function mergeChain(a, b) {
@@ -199,7 +200,7 @@ function clearBoard(x, y, comboBonus) {
   addScore(finalPairPoints + comboBonus);
   burst(x, y, "#6b9b42", 38);
   celebrate("双神·香菜 · 全场清空", "+500 分 · +1 复活币 · 本局继续", "gold");
-  playSound(850, .34, .13);
+  playSound("clear");
 }
 
 function merge(a, b) {
@@ -223,13 +224,15 @@ function merge(a, b) {
   addScore(levels[level].points + comboBonus);
   if (level === cilantroLevel) {
     celebrate("香菜觉得你很不错哦", "两株香菜可合成神·香菜");
+    playSound("cilantro");
   } else if (level === divineLevel) {
     celebrate("你得到了香菜的青睐", "神·香菜降临", "gold");
     burst(x, y, "#ffd768", 40);
-    playSound(1140, .34);
+    playSound("divine");
+  } else {
+    playSound(comboBonus > 0 ? "combo" : "merge", level + (chain?.count ?? 0));
   }
   burst(x, y, levels[level].accent, level >= cilantroLevel ? 48 : 14);
-  playSound(400 + level * 54, .17);
   return false;
 }
 
@@ -360,7 +363,7 @@ function revive() {
   cooldown = .22;
   result.close();
   updateHud();
-  playSound(670, .26);
+  playSound("revive");
 }
 
   function advanceTo(tick) {

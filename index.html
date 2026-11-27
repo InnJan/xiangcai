@@ -436,36 +436,120 @@ const sprites = levels.map((piece, level) => {
 });
 guideIcons.forEach(drawIcon);
 
-let audio;
+let audio, soundBus, soundNoise;
+
+function prepareSound(Audio) {
+  audio = new Audio();
+  soundBus = audio.createGain();
+  soundBus.gain.value = .72;
+  const compressor = audio.createDynamicsCompressor();
+  compressor.threshold.value = -15;
+  compressor.ratio.value = 5;
+  compressor.attack.value = .006;
+  compressor.release.value = .16;
+  soundBus.connect(compressor);
+  compressor.connect(audio.destination);
+  soundNoise = audio.createBuffer(1, Math.ceil(audio.sampleRate * 1.2), audio.sampleRate);
+  const samples = soundNoise.getChannelData(0);
+  // Sound generation has its own sequence so muting never changes the game.
+  let seed = 0x317a2d49;
+  for (let i = 0; i < samples.length; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    samples[i] = seed / 0x80000000 - 1;
+  }
+}
+
 function wakeSound() {
   if (!profile.sound) return;
   const Audio = window.AudioContext || window.webkitAudioContext;
   if (!Audio) return;
   try {
-    audio ??= new Audio();
-    if (audio.state === "suspended") audio.resume().catch(() => {});
+    if (!audio || !soundNoise) prepareSound(Audio);
+    if (audio.state === "suspended" || audio.state === "interrupted") audio.resume().catch(() => {});
   } catch {}
 }
 
-function playSound(frequency, time, volume = .07) {
-  if (!profile.sound || audio?.state !== "running") return;
-  const tone = audio.createOscillator();
+function soundEnvelope(input, start, length, peak, attack) {
   const gain = audio.createGain();
-  const now = audio.currentTime;
-  tone.type = "sine";
-  tone.frequency.setValueAtTime(frequency, now);
-  tone.frequency.exponentialRampToValueAtTime(frequency * .66, now + time);
-  gain.gain.setValueAtTime(volume, now);
-  gain.gain.exponentialRampToValueAtTime(.001, now + time);
-  tone.connect(gain);
-  gain.connect(audio.destination);
-  tone.start(now);
-  tone.stop(now + time);
+  gain.gain.setValueAtTime(.0001, start);
+  gain.gain.exponentialRampToValueAtTime(peak, start + attack);
+  gain.gain.exponentialRampToValueAtTime(.0001, start + length);
+  input.connect(gain);
+  gain.connect(soundBus);
+  return () => { input.disconnect(); gain.disconnect(); };
+}
+
+function soundTone(start, length, from, to, peak, type = "sine") {
+  const tone = audio.createOscillator();
+  tone.type = type;
+  tone.frequency.setValueAtTime(from, start);
+  tone.frequency.exponentialRampToValueAtTime(to, start + length);
+  tone.onended = soundEnvelope(tone, start, length, peak, .005);
+  tone.start(start);
+  tone.stop(start + length);
+}
+
+function soundSweep(start, length, from, to, peak, attack = .009) {
+  const noise = audio.createBufferSource();
+  const filter = audio.createBiquadFilter();
+  noise.buffer = soundNoise;
+  filter.type = "bandpass";
+  filter.Q.value = .7;
+  filter.frequency.setValueAtTime(from, start);
+  filter.frequency.exponentialRampToValueAtTime(to, start + length);
+  const release = soundEnvelope(filter, start, length, peak, attack);
+  noise.connect(filter);
+  noise.onended = () => { noise.disconnect(); release(); };
+  noise.start(start, 0, length);
+}
+
+function playSound(event, level = 0) {
+  if (!profile.sound || audio?.state !== "running" || !soundNoise) return;
+  const now = audio.currentTime + .006;
+  if (event === "drop") {
+    soundTone(now, .09, 290, 125, .11, "triangle");
+    soundSweep(now, .045, 1800, 950, .085);
+  } else if (event === "wind") {
+    soundSweep(now, .21, 340, 2300, .20, .034);
+    soundTone(now + .12, .11, 320, 140, .09, "triangle");
+  } else if (event === "inspection" || event === "danger") {
+    soundTone(now, .17, 195, 148, .16, "triangle");
+    soundTone(now + .14, .22, event === "inspection" ? 247 : 146, 113, .14, "triangle");
+    soundSweep(now, .32, 620, 160, .12);
+  } else if (event === "merge" || event === "combo") {
+    const pitch = 260 * 2 ** (Math.min(level, 14) / 22);
+    soundTone(now, .14, 154, 64, event === "combo" ? .24 : .16, "triangle");
+    soundTone(now + .024, .19, pitch, pitch * .96, .115, "triangle");
+    soundTone(now + .053, .15, pitch * 1.5, pitch * 1.47, .065);
+    if (event === "combo") {
+      soundTone(now + .09, .20, pitch * 2, pitch * 1.97, .10, "triangle");
+      soundSweep(now, .16, 2100, 610, .15);
+    }
+  } else if (event === "divine" || event === "clear") {
+    const clear = event === "clear";
+    soundTone(now, clear ? .92 : .68, 145, clear ? 35 : 49, clear ? .54 : .40);
+    soundTone(now + .016, .47, 192, 62, clear ? .31 : .21, "triangle");
+    soundSweep(now, clear ? .88 : .61, clear ? 4200 : 3000, 135, clear ? .49 : .29);
+    const notes = clear ? [196, 293.66, 392, 587.33, 783.99] : [220, 329.63, 440, 659.25];
+    notes.forEach((pitch, index) => {
+      const time = now + .10 + index * .067;
+      soundTone(time, .53, pitch, pitch * .985, .095, "triangle");
+      soundTone(time + .025, .44, pitch * 2, pitch * 1.97, .05);
+    });
+  } else if (event === "cilantro" || event === "revive") {
+    soundTone(now, .29, 349.23, 345, .13, "triangle");
+    soundTone(now + .071, .38, 523.25, 516, .11, "triangle");
+    soundTone(now + .14, .46, event === "cilantro" ? 783.99 : 659.25, 650, .082);
+  } else if (event === "remove") {
+    soundTone(now, .12, 530, 290, .10, "triangle");
+    soundSweep(now, .17, 1500, 390, .16);
+  }
 }
 
 function updateSound() {
   $("sound").textContent = profile.sound ? "音效开启" : "音效关闭";
   $("sound").setAttribute("aria-pressed", String(profile.sound));
+  if (soundBus) soundBus.gain.setTargetAtTime(profile.sound ? .72 : 0, audio.currentTime, .012);
 }
 
 let balls, particles, score, coins, shownLevel, nextLevel, aim, cooldown, state, drops;
@@ -627,7 +711,7 @@ function removePiece(ball) {
   tickets--;
   burst(ball.x, ball.y, levels[ball.level].accent, 16);
   setRemovalMode(false);
-  playSound(610, .18);
+  playSound("remove");
 }
 
 function selectRemovalTarget(offset) {
@@ -697,7 +781,8 @@ function drop() {
   updateDropPreview();
   cooldown = .32;
   updateRemovalControl();
-  playSound(225, .10, .035);
+  playSound(wind ? "wind" : "drop");
+  if (drops % 25 === 0) playSound("inspection");
 }
 
 function burst(x, y, color, size) {
@@ -768,7 +853,7 @@ function clearBoard(x, y, comboBonus) {
   addScore(finalPairPoints + comboBonus);
   burst(x, y, "#6b9b42", 38);
   celebrate("双神·香菜 · 全场清空", "+500 分 · +1 复活币 · 本局继续", "gold");
-  playSound(850, .34, .13);
+  playSound("clear");
 }
 
 function merge(a, b) {
@@ -792,13 +877,15 @@ function merge(a, b) {
   addScore(levels[level].points + comboBonus);
   if (level === cilantroLevel) {
     celebrate("香菜觉得你很不错哦", "两株香菜可合成神·香菜");
+    playSound("cilantro");
   } else if (level === divineLevel) {
     celebrate("你得到了香菜的青睐", "神·香菜降临", "gold");
     burst(x, y, "#ffd768", 40);
-    playSound(1140, .34);
+    playSound("divine");
+  } else {
+    playSound(comboBonus > 0 ? "combo" : "merge", level + (chain?.count ?? 0));
   }
   burst(x, y, levels[level].accent, level >= cilantroLevel ? 48 : 14);
-  playSound(400 + level * 54, .17);
   return false;
 }
 
@@ -911,6 +998,7 @@ function advance() {
 }
 
 function showResult() {
+  playSound("danger");
   state = coins > 0 ? "revive" : "playing";
   if (state === "revive") {
     $("result-title").textContent = "越过警戒线了";
@@ -962,7 +1050,7 @@ function revive() {
   cooldown = .22;
   result.close();
   updateHud();
-  playSound(670, .26);
+  playSound("revive");
 }
 
 const backdrop = document.createElement("canvas");
