@@ -8,17 +8,17 @@ const spawnY = 39;
 const step = 1 / 120;
 const clamp = (value, min, max) => Math.max(min, Math.min(value, max));
 const reviveInterval = 2000;
-const ticketInterval = 300;
+const ticketInterval = 2000;
 const finalPairPoints = 500;
 const dangerSeconds = 1.5;
-const rulesVersion = 1;
+const rulesVersion = 3;
 const tickRate = 120;
 const maxTicks = 120 * 60 * 12;
 const maxActions = 850;
 const levels = [{"radius":12,"points":0},{"radius":15,"points":1},{"radius":18,"points":3},{"radius":21,"points":6},{"radius":24,"points":10},{"radius":27,"points":11},{"radius":30,"points":12},{"radius":33,"points":13},{"radius":34.5,"points":14},{"radius":36,"points":15},{"radius":39,"points":17},{"radius":42,"points":19},{"radius":45,"points":21},{"radius":49,"points":28},{"radius":53,"points":36},{"radius":57,"points":40},{"radius":62,"points":45},{"radius":70,"points":100}];
 export { rulesVersion, tickRate, maxTicks, maxActions };
 
-export function replay(seed, actions, finalTick) {
+export function replay(seed, actions, finalTick, version = rulesVersion) {
   if (!Array.isArray(actions) || actions.length > maxActions || !Number.isInteger(finalTick) || finalTick < 1 || finalTick > maxTicks) return null;
   let draw = 0;
   function randomLevel() { return dailyPiece(seed, draw++, levels.length); }
@@ -29,11 +29,11 @@ export function replay(seed, actions, finalTick) {
   const divineLevel = levels.length - 1;
   const cilantroLevel = divineLevel - 1;
   const rank = { open: false }, result = { close() {} }, profile = { best: 0 };
-  const nextCanvas = { setAttribute() {} };
   const noOp = () => {};
-  const wakeSound = noOp, drawIcon = noOp, updateRemovalControl = noOp, playSound = noOp;
+  const wakeSound = noOp, updateDropPreview = noOp, updateRemovalControl = noOp, playSound = noOp;
   const burst = noOp, saveProfile = noOp, updateHud = noOp, showCombo = noOp, celebrate = noOp, recordDailyAction = noOp;
   function isDailyMode() { return true; }
+  function activeRulesVersion() { return version; }
   function finishDailyAtLimit() { state = "ended"; }
   function setRemovalMode(active) { removalMode = active; }
   function showResult() { state = coins > 0 ? "revive" : "ended"; }
@@ -54,6 +54,25 @@ function dailyPiece(seed, index, levelCount) {
   return value < .70 ? top - 1 : top;
 }
 
+function inspectionRemaining(count) {
+  return count >= 25 ? Math.max(0, 3 - (count % 25)) : 0;
+}
+
+function dangerLine(count) {
+  return line + (inspectionRemaining(count) > 0 ? 16 : 0);
+}
+
+function windAt(throwNumber) {
+  if (throwNumber % 11 !== 0) return 0;
+  const distance = activeRulesVersion() === 2 ? 12 : width / 4;
+  return throwNumber % 22 === 0 ? distance : -distance;
+}
+
+function windAim(x, radius, wind) {
+  if (activeRulesVersion() === 2 || !wind) return x;
+  return clamp(x, left + radius + Math.max(0, -wind), right - radius - Math.max(0, wind));
+}
+
 function removePiece(ball) {
   if (!removalMode || !ball || tickets === 0) return;
   const index = balls.indexOf(ball);
@@ -68,7 +87,8 @@ function removePiece(ball) {
 
 function addScore(points) {
   coins += Math.floor((score + points) / reviveInterval) - Math.floor(score / reviveInterval);
-  tickets += Math.floor((score + points) / ticketInterval) - Math.floor(score / ticketInterval);
+  const interval = activeRulesVersion() === 2 ? 300 : ticketInterval;
+  tickets += Math.floor((score + points) / interval) - Math.floor(score / interval);
   score += points;
   if (!isDailyMode() && score > profile.best) {
     profile.best = score;
@@ -92,13 +112,14 @@ function drop() {
   if (isDailyMode()) aim = Math.round(clamp(aim, 0, width) * 100) / 100;
   recordDailyAction("d", Math.round(aim * 100));
   const radius = levels[shownLevel].radius;
-  const ball = makeBall(shownLevel, clamp(aim, left + radius, right - radius), Math.max(spawnY, radius + 3), 0, 42);
+  const wind = windAt(drops + 1);
+  const x = windAim(aim, radius, wind);
+  const ball = makeBall(shownLevel, clamp(x + wind, left + radius, right - radius), Math.max(spawnY, radius + 3), 0, 42);
   ball.chain = { drop: ++drops, count: 0 };
   balls.push(ball);
   shownLevel = nextLevel;
   nextLevel = randomLevel();
-  drawIcon(nextCanvas, nextLevel);
-  nextCanvas.setAttribute("aria-label", "下一个：" + levels[nextLevel].name);
+  updateDropPreview();
   cooldown = .32;
   updateRemovalControl();
   playSound(225, .10, .035);
@@ -247,9 +268,10 @@ function advance() {
     }
   }
   if (balls.some(ball => ball.dead)) balls = balls.filter(ball => !ball.dead);
+  const limit = dangerLine(drops);
   for (const ball of balls) {
     const parked = ball.contacted && ball.age > .65 && Math.hypot(ball.vx, ball.vy) < 85;
-    ball.danger = ball.y - ball.radius < line && parked
+    ball.danger = ball.y - ball.radius < limit && parked
       ? ball.danger + step : Math.max(0, ball.danger - 2 * step);
     if (ball.danger > dangerSeconds) {
       showResult();
@@ -270,8 +292,9 @@ function revive() {
   wakeSound();
   recordDailyAction("r");
   coins--;
+  const limit = dangerLine(drops);
   balls = balls.filter(ball => {
-    if (ball.y - ball.radius >= line) {
+    if (ball.y - ball.radius >= limit) {
       ball.danger = 0;
       return true;
     }

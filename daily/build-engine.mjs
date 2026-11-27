@@ -4,7 +4,7 @@ const script = page.match(/<script[^>]*id="game-script"[^>]*>([\s\S]*?)<\/script
 if (!script) throw new Error("Game script not found");
 const tiers = JSON.parse(script.match(/const levels = (\[[\s\S]*?\n\]);/)[1]);
 const constants = ["width", "floor", "line", "left", "right", "spawnY", "step", "clamp", "reviveInterval", "ticketInterval", "finalPairPoints", "dangerSeconds", "rulesVersion", "tickRate", "maxTicks", "maxActions"];
-const gameplay = ["dailyPiece", "removePiece", "addScore", "makeBall", "drop", "mergeChain", "clearBoard", "merge", "bound", "collide", "advance", "revive"];
+const gameplay = ["dailyPiece", "inspectionRemaining", "dangerLine", "windAt", "windAim", "removePiece", "addScore", "makeBall", "drop", "mergeChain", "clearBoard", "merge", "bound", "collide", "advance", "revive"];
 const constant = name => {
   const match = script.match(new RegExp("^const " + name + " = .+;$", "m"));
   if (!match) throw new Error("Missing game constant " + name);
@@ -20,7 +20,7 @@ ${constants.map(constant).join("\n")}
 const levels = ${JSON.stringify(tiers.map(({radius,points})=>({radius,points})))};
 export { rulesVersion, tickRate, maxTicks, maxActions };
 
-export function replay(seed, actions, finalTick) {
+export function replay(seed, actions, finalTick, version = rulesVersion) {
   if (!Array.isArray(actions) || actions.length > maxActions || !Number.isInteger(finalTick) || finalTick < 1 || finalTick > maxTicks) return null;
   let draw = 0;
   function randomLevel() { return dailyPiece(seed, draw++, levels.length); }
@@ -31,11 +31,11 @@ export function replay(seed, actions, finalTick) {
   const divineLevel = levels.length - 1;
   const cilantroLevel = divineLevel - 1;
   const rank = { open: false }, result = { close() {} }, profile = { best: 0 };
-  const nextCanvas = { setAttribute() {} };
   const noOp = () => {};
-  const wakeSound = noOp, drawIcon = noOp, updateRemovalControl = noOp, playSound = noOp;
+  const wakeSound = noOp, updateDropPreview = noOp, updateRemovalControl = noOp, playSound = noOp;
   const burst = noOp, saveProfile = noOp, updateHud = noOp, showCombo = noOp, celebrate = noOp, recordDailyAction = noOp;
   function isDailyMode() { return true; }
+  function activeRulesVersion() { return version; }
   function finishDailyAtLimit() { state = "ended"; }
   function setRemovalMode(active) { removalMode = active; }
   function showResult() { state = coins > 0 ? "revive" : "ended"; }

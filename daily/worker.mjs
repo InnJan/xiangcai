@@ -64,14 +64,28 @@ async function readJson(request) {
   }
 }
 
-async function board(db, day) {
+function supportsRules(version) {
+  return version === 2 || version === rulesVersion;
+}
+
+async function board(db, day, version) {
   const query = `SELECT name, score FROM (
     SELECT name, score, submitted,
       ROW_NUMBER() OVER (PARTITION BY player ORDER BY score DESC, submitted ASC, id ASC) AS best
-    FROM entries WHERE day = ?
+    FROM entries WHERE day = ? AND rules_version = ?
   ) WHERE best = 1 ORDER BY score DESC, submitted ASC, name ASC LIMIT 25`;
-  const { results } = await db.prepare(query).bind(day).all();
+  const { results } = await db.prepare(query).bind(day, version).all();
   return results;
+}
+
+function d1Store(db) {
+  return {
+    board: (day, version) => board(db, day, version),
+    score: id => db.prepare("SELECT score FROM entries WHERE id = ?").bind(id).first(),
+    submit: ({ id, player, day, name, score, submitted, rules_version }) =>
+      db.prepare("INSERT INTO entries (id, player, day, name, score, submitted, rules_version) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING")
+        .bind(id, player, day, name, score, submitted, rules_version).run(),
+  };
 }
 
 export async function handleRequest(request, env, now = Date.now()) {
@@ -86,27 +100,32 @@ export async function handleRequest(request, env, now = Date.now()) {
     headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     return new Response(null, { status: 204, headers });
   }
-  const path = new URL(request.url).pathname;
+  const url = new URL(request.url);
+  const path = url.pathname;
   const day = dayAt(now);
+  const store = env.STORE ?? d1Store(env.DB);
   try {
     if (request.method === "GET" && path === "/board") {
-      return reply({ day, entries: await board(env.DB, day) });
+      const version = Number(url.searchParams.get("rulesVersion") ?? 2);
+      if (!supportsRules(version)) return reply({ error: "请刷新游戏后再开始" }, 409);
+      return reply({ day, rulesVersion: version, entries: await store.board(day, version) });
     }
     if (request.method !== "POST" || !["/start", "/submit"].includes(path)) return reply({ error: "接口不存在" }, 404);
     if (typeof env.HMAC_SECRET !== "string" || env.HMAC_SECRET.length < 32) return reply({ error: "今日榜暂未配置" }, 503);
     const key = await signingKey(env.HMAC_SECRET);
     const body = await readJson(request);
     if (path === "/start") {
-      if (body.rulesVersion !== rulesVersion) return reply({ error: "请刷新游戏后再开始" }, 409);
+      const version = body.rulesVersion;
+      if (!supportsRules(version)) return reply({ error: "请刷新游戏后再开始" }, 409);
       const identity = await verify(body.player, key);
       const playerId = identity?.type === "player" ? identity.id : crypto.randomUUID();
       const player = await sign({ type: "player", id: playerId }, key);
       const seed = seedFor(day);
-      const run = await sign({ type: "run", id: crypto.randomUUID(), player: playerId, day, seed, started: now, rulesVersion }, key);
-      return reply({ day, seed, run, player });
+      const run = await sign({ type: "run", id: crypto.randomUUID(), player: playerId, day, seed, started: now, rulesVersion: version }, key);
+      return reply({ day, seed, run, player, rulesVersion: version });
     }
     const run = await verify(body.run, key);
-    if (run?.type !== "run" || run.rulesVersion !== rulesVersion || run.day !== day ||
+    if (run?.type !== "run" || !supportsRules(run.rulesVersion) || run.day !== day ||
         now < run.started || now - run.started > 2 * hour) {
       return reply({ error: "对局已过期，请重新开始" }, 409);
     }
@@ -117,15 +136,14 @@ export async function handleRequest(request, env, now = Date.now()) {
     const name = body.name.trim().normalize("NFC");
     if (!name || name.length > 18 || /[\p{Cc}\p{Cf}]/u.test(name)) return reply({ error: "昵称须为 1–18 个可见字符" }, 422);
 
-    const existing = await env.DB.prepare("SELECT score FROM entries WHERE id = ?").bind(run.id).first();
+    const existing = await store.score(run.id);
     if (existing) return reply({ day, score: existing.score });
-    const verified = replay(run.seed, body.actions, body.tick);
+    const verified = replay(run.seed, body.actions, body.tick, run.rulesVersion);
     if (!verified || !verified.drops || verified.score !== body.score) {
       return reply({ error: "回放无法重现本局成绩" }, 422);
     }
-    await env.DB.prepare("INSERT INTO entries (id, player, day, name, score, submitted) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING")
-      .bind(run.id, run.player, day, name, verified.score, now).run();
-    const submitted = await env.DB.prepare("SELECT score FROM entries WHERE id = ?").bind(run.id).first();
+    await store.submit({ id: run.id, player: run.player, day, name, score: verified.score, submitted: now, rules_version: run.rulesVersion });
+    const submitted = await store.score(run.id);
     return reply({ day, score: submitted.score });
   } catch (error) {
     if (error instanceof BadRequest) return reply({ error: error.message }, 400);

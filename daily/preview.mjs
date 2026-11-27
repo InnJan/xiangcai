@@ -25,7 +25,7 @@ const env = {
   },
 };
 const localPage = readFileSync(new URL("../index.html", import.meta.url), "utf8")
-  .replace('const dailyApi = "";', 'const dailyApi = "/api";');
+  .replace(/^const dailyApi = "[^"]*";$/m, 'const dailyApi = "/api";');
 const maxBytes = 24 * 1024;
 
 createServer(async (incoming, outgoing) => {

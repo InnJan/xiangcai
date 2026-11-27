@@ -4,7 +4,8 @@ CREATE TABLE IF NOT EXISTS entries (
   day TEXT NOT NULL,
   name TEXT NOT NULL,
   score INTEGER NOT NULL CHECK (score >= 0),
-  submitted INTEGER NOT NULL
+  submitted INTEGER NOT NULL,
+  rules_version INTEGER NOT NULL DEFAULT 2
 );
 CREATE INDEX IF NOT EXISTS entries_day_player_score
   ON entries(day, player, score DESC, submitted);

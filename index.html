@@ -54,6 +54,8 @@ h1 { margin: 0; font-size: clamp(29px, 5vw, 45px); line-height: 1; letter-spacin
 .stat .record-flag { display: inline; color: #7a4b22; font-weight: 750; margin-left: 5px; }
 .next { display: flex; align-items: center; gap: 5px; }
 .next canvas { display: block; width: 38px; height: 38px; }
+.next .wind-preview { font-size: 11px; color: #875424; white-space: nowrap; }
+#traps { margin: 5px 2px 0; font-size: 12px; font-weight: 650; color: #8b492c; }
 .board { position: relative; background: #edf3e9; border: 1px solid #a0b197; border-radius: 10px; overflow: hidden; }
 #field { display: block; width: 100%; aspect-ratio: 440 / 478; touch-action: none; cursor: crosshair; }
 #field:focus-visible { outline-offset: -4px; }
@@ -187,7 +189,7 @@ dialog p { color: var(--muted); line-height: 1.6; }
           <div class="stat"><span>本局得分</span><strong id="score">0</strong></div>
           <div class="stat"><span>个人纪录<span id="record-flag" class="record-flag" hidden>新纪录</span></span><strong id="best">0</strong></div>
         </div>
-        <div class="next"><span>下一个</span><canvas id="next" width="80" height="80"></canvas></div>
+        <div class="next"><span>下一个<span id="next-wind" class="wind-preview" hidden></span></span><canvas id="next" width="80" height="80"></canvas></div>
       </div>
       <div class="board">
         <canvas id="field" width="880" height="956" tabindex="0" aria-label="棋盘，方向键瞄准，空格投放" aria-describedby="hint"></canvas>
@@ -203,20 +205,20 @@ dialog p { color: var(--muted); line-height: 1.6; }
         <span id="hint" aria-live="polite">拖动瞄准 · 松手投放</span>
         <span id="coins" aria-live="polite">复活币 × 0</span>
       </div>
+      <div id="traps" role="status" hidden></div>
       <div class="board-meta board-actions">
         <button id="remove-ticket" type="button" aria-pressed="false" aria-describedby="ticket-progress" disabled>移除券 × 0</button>
-        <span id="ticket-progress">每满 300 分送一张</span>
+        <span id="ticket-progress">每满 2,000 分送一张</span>
       </div>
     </section>
     <aside aria-label="游戏选项">
       <section class="tile">
         <h2>合成顺序</h2>
         <div id="evolution" class="evolution"></div>
-        <p>一次投放接连合成两次以上，可获连锁加分。解锁更高等级后，可投放的角色也会升级。两株香菜合成神·香菜，两株神·香菜相撞清屏并奖励 500 分和一枚复活币。每 2,000 分也会获得一枚复活币。</p>
+        <p>一次投放接连合成两次以上，可获连锁加分。每 25 投会有一次突击检查，警戒线压低 3 投。每 11 投会吹偏一次，箭头会提前提示方向。两株神·香菜相撞可清屏，每 2,000 分可获得一枚复活币。</p>
       </section>
       <div class="tile tools">
-        <button id="daily-mode" type="button" hidden>每日挑战</button>
-        <button id="daily-board" type="button" hidden>今日榜</button>
+        <button id="daily-mode" type="button" hidden>每日挑战 · 今日榜</button>
         <button id="show-rank" type="button">本机排行榜</button>
         <button id="sound" type="button" aria-pressed="true">音效开启</button>
         <button id="reset" type="button">重新开始</button>
@@ -247,7 +249,7 @@ dialog p { color: var(--muted); line-height: 1.6; }
   <h2 id="daily-title">今日同题榜</h2>
   <p id="daily-notice" role="status"></p>
   <label for="daily-name">公开昵称</label>
-  <input id="daily-name" type="text" maxlength="18" placeholder="香菜路人" autocomplete="off">
+  <input id="daily-name" type="text" maxlength="18" placeholder="填一个上榜昵称" autocomplete="nickname">
   <ol id="daily-entries"></ol>
   <div class="dialog-actions">
     <button id="daily-start" class="primary" type="button">开始每日挑战</button>
@@ -274,16 +276,16 @@ const step = 1 / 120;
 const clamp = (value, min, max) => Math.max(min, Math.min(value, max));
 const storageKey = "cilantro-merge-1";
 const reviveInterval = 2000;
-const ticketInterval = 300;
+const ticketInterval = 2000;
 const ticketButton = $("remove-ticket");
 const comboIndicator = $("combo");
 const finalPairPoints = 500;
 const dangerSeconds = 1.5;
-const rulesVersion = 1;
+const rulesVersion = 3;
 const tickRate = 120;
 const maxTicks = 120 * 60 * 12;
 const maxActions = 850;
-const dailyApi = "";
+const dailyApi = "https://gzxsunryhsxyvyjbgygc.supabase.co/functions/v1/cilantro-board";
 const celebration = $("celebration");
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const levels = [
@@ -513,6 +515,43 @@ function randomLevel() {
   return highestDrop;
 }
 
+function inspectionRemaining(count) {
+  return count >= 25 ? Math.max(0, 3 - (count % 25)) : 0;
+}
+
+function dangerLine(count) {
+  return line + (inspectionRemaining(count) > 0 ? 16 : 0);
+}
+
+function windAt(throwNumber) {
+  if (throwNumber % 11 !== 0) return 0;
+  const distance = activeRulesVersion() === 2 ? 12 : width / 4;
+  return throwNumber % 22 === 0 ? distance : -distance;
+}
+
+function windAim(x, radius, wind) {
+  if (activeRulesVersion() === 2 || !wind) return x;
+  return clamp(x, left + radius + Math.max(0, -wind), right - radius - Math.max(0, wind));
+}
+
+function updateDropPreview() {
+  drawIcon(nextCanvas, nextLevel);
+  const preview = $("next-wind");
+  const nextWind = windAt(drops + 2);
+  preview.hidden = nextWind === 0;
+  preview.textContent = nextWind < 0 ? "← 左偏" : "→ 右偏";
+  nextCanvas.setAttribute("aria-label", "下一个：" + levels[nextLevel].name + (nextWind ? "，" + preview.textContent : ""));
+  const notices = [];
+  const approaching = (drops + 1) % 25 === 0;
+  const remaining = inspectionRemaining(drops);
+  const wind = windAt(drops + 1);
+  if (approaching) notices.push("下一投触发突击检查");
+  if (remaining > 0) notices.push("突击检查 · 警戒线压低");
+  if (wind) notices.push((wind < 0 ? "这颗向左偏移" : "这颗向右偏移") + "四分之一棋盘");
+  $("traps").textContent = notices.join("　·　");
+  $("traps").hidden = notices.length === 0;
+}
+
 function updateHud() {
   $("score").textContent = number.format(score);
   $("best").textContent = number.format(profile.best);
@@ -580,13 +619,13 @@ function reset() {
   playerId = null;
   setRemovalMode(false);
   updateHud();
-  drawIcon(nextCanvas, nextLevel);
-  nextCanvas.setAttribute("aria-label", "下一个：" + levels[nextLevel].name);
+  updateDropPreview();
 }
 
 function addScore(points) {
   coins += Math.floor((score + points) / reviveInterval) - Math.floor(score / reviveInterval);
-  tickets += Math.floor((score + points) / ticketInterval) - Math.floor(score / ticketInterval);
+  const interval = activeRulesVersion() === 2 ? 300 : ticketInterval;
+  tickets += Math.floor((score + points) / interval) - Math.floor(score / interval);
   score += points;
   if (!isDailyMode() && score > profile.best) {
     profile.best = score;
@@ -610,13 +649,14 @@ function drop() {
   if (isDailyMode()) aim = Math.round(clamp(aim, 0, width) * 100) / 100;
   recordDailyAction("d", Math.round(aim * 100));
   const radius = levels[shownLevel].radius;
-  const ball = makeBall(shownLevel, clamp(aim, left + radius, right - radius), Math.max(spawnY, radius + 3), 0, 42);
+  const wind = windAt(drops + 1);
+  const x = windAim(aim, radius, wind);
+  const ball = makeBall(shownLevel, clamp(x + wind, left + radius, right - radius), Math.max(spawnY, radius + 3), 0, 42);
   ball.chain = { drop: ++drops, count: 0 };
   balls.push(ball);
   shownLevel = nextLevel;
   nextLevel = randomLevel();
-  drawIcon(nextCanvas, nextLevel);
-  nextCanvas.setAttribute("aria-label", "下一个：" + levels[nextLevel].name);
+  updateDropPreview();
   cooldown = .32;
   updateRemovalControl();
   playSound(225, .10, .035);
@@ -813,9 +853,10 @@ function advance() {
     }
   }
   if (balls.some(ball => ball.dead)) balls = balls.filter(ball => !ball.dead);
+  const limit = dangerLine(drops);
   for (const ball of balls) {
     const parked = ball.contacted && ball.age > .65 && Math.hypot(ball.vx, ball.vy) < 85;
-    ball.danger = ball.y - ball.radius < line && parked
+    ball.danger = ball.y - ball.radius < limit && parked
       ? ball.danger + step : Math.max(0, ball.danger - 2 * step);
     if (ball.danger > dangerSeconds) {
       showResult();
@@ -869,8 +910,9 @@ function revive() {
   wakeSound();
   recordDailyAction("r");
   coins--;
+  const limit = dangerLine(drops);
   balls = balls.filter(ball => {
-    if (ball.y - ball.radius >= line) {
+    if (ball.y - ball.radius >= limit) {
       ball.danger = 0;
       return true;
     }
@@ -920,6 +962,8 @@ backdropContext.fillRect(0, floor, width, height - floor);
 
 function render(now = 0) {
   const ctx = context;
+  const line = dangerLine(drops);
+  const checking = inspectionRemaining(drops) > 0;
   ctx.setTransform(2, 0, 0, 2, 0, 0);
   ctx.drawImage(backdrop, 0, 0, width, height);
   const dangerProgress = balls.reduce((maximum, ball) => Math.max(maximum, ball.danger), 0) / dangerSeconds;
@@ -928,7 +972,7 @@ function render(now = 0) {
     ctx.fillStyle = "#bc68421d";
     ctx.fillRect(0, 0, width, line);
   }
-  ctx.strokeStyle = danger ? "#a74833" : "#a8664aa6";
+  ctx.strokeStyle = danger || checking ? "#a74833" : "#a8664aa6";
   ctx.lineWidth = 1;
   ctx.setLineDash([5, 5]);
   ctx.beginPath();
@@ -942,7 +986,7 @@ function render(now = 0) {
   }
   ctx.font = '11px "PingFang SC", "Microsoft YaHei", sans-serif';
   ctx.fillStyle = "#89573f";
-  ctx.fillText("警戒线", 14, line - 8);
+  ctx.fillText(checking ? "突击检查线" : "警戒线", 14, line - 8);
   if (drops === 0) {
     ctx.save();
     ctx.globalAlpha = .13;
@@ -951,7 +995,7 @@ function render(now = 0) {
   }
   if (state === "playing" && !removalMode) {
     const r = levels[shownLevel].radius;
-    const x = clamp(aim, left + r, right - r);
+    const x = clamp(windAim(aim, r, windAt(drops + 1)), left + r, right - r);
     const target = balls.reduce((y, ball) => {
       const dx = ball.x - x;
       const radius = ball.radius + r;
@@ -1094,6 +1138,7 @@ function showRank() {
 }
 
 function isDailyMode() { return dailySession !== null; }
+function activeRulesVersion() { return dailySession?.rulesVersion ?? rulesVersion; }
 
 function recordDailyAction(kind, value) {
   if (!dailySession || dailySession.actions.length > maxActions) return;
@@ -1124,14 +1169,15 @@ async function showDailyBoard() {
   if (removalMode) setRemovalMode(false);
   if (!dialog.open) {
     $("daily-name").value = profile.name;
+    try { $("daily-name").value = localStorage.getItem("cilantro-daily-name") || profile.name; } catch {}
     dialog.showModal();
   }
   $("daily-notice").textContent = "正在加载今日榜…";
   $("daily-entries").replaceChildren();
   try {
-    const { day, entries } = await dailyRequest("/board");
+    const { day, entries } = await dailyRequest("/board?rulesVersion=" + rulesVersion);
     $("daily-notice").textContent = day + "（北京时间） · " +
-      (entries.length ? "同一投放顺序，每人取最高分" : "还没有人成绩上榜") + "。开始挑战即同意公开昵称和成绩。";
+      (entries.length ? "同一投放顺序，每人取最高分" : "今天还没有成绩上榜") + "。开始挑战即同意公开昵称和成绩。";
     for (const entry of entries) {
       const item = document.createElement("li");
       item.textContent = entry.name + " · " + number.format(entry.score) + " 分";
@@ -1144,13 +1190,25 @@ async function showDailyBoard() {
 
 async function startDaily() {
   const button = $("daily-start");
+  const name = $("daily-name").value.trim().normalize("NFC");
+  if (!name) {
+    $("daily-notice").textContent = "先填一个公开昵称，再开始挑战。";
+    $("daily-name").focus();
+    return;
+  }
+  if (name.length > 18 || /[\p{Cc}\p{Cf}]/u.test(name)) {
+    $("daily-notice").textContent = "昵称须为 1–18 个可见字符。";
+    return;
+  }
   button.disabled = true;
-  const name = $("daily-name").value.trim() || "香菜路人";
   let player = "";
   try { player = localStorage.getItem("cilantro-daily-player") || ""; } catch {}
   try {
     const opened = await dailyRequest("/start", { player, rulesVersion });
-    try { localStorage.setItem("cilantro-daily-player", opened.player); } catch {}
+    try {
+      localStorage.setItem("cilantro-daily-player", opened.player);
+      localStorage.setItem("cilantro-daily-name", name);
+    } catch {}
     dailySession = { ...opened, name, actions: [] };
     $("daily-rank").close();
     $("end-rank").textContent = "今日榜";
@@ -1206,10 +1264,8 @@ $("sound").addEventListener("click", () => {
   saveProfile();
 });
 if (dailyApi) {
-  for (const id of ["daily-mode", "daily-board"]) {
-    $(id).hidden = false;
-    $(id).addEventListener("click", showDailyBoard);
-  }
+  $("daily-mode").hidden = false;
+  $("daily-mode").addEventListener("click", showDailyBoard);
   $("daily-start").addEventListener("click", startDaily);
 }
 updateSound();
